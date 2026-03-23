@@ -95,7 +95,7 @@ async def main():
     def get_main_keyboard():
         builder = InlineKeyboardBuilder()
         builder.row(types.InlineKeyboardButton(text="🚀 Пробная версия VPN (Бесплатно)", callback_data="start_trial_vpn"))
-        builder.row(types.InlineKeyboardButton(text="🌐 Обычный интернет (черные списки)", callback_data="blacklist_vpn"))
+        builder.row(types.InlineKeyboardButton(text="🌐 Обычный интернет (без белых списков)", callback_data="blacklist_vpn"))
         builder.row(types.InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="plans"))
         builder.row(types.InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
         builder.row(types.InlineKeyboardButton(text="🛠 Поддержка", url="https://t.me/your_admin_link"))
@@ -334,7 +334,7 @@ async def main():
         Ключи обновляются каждые 12 часов для обхода блокировок.
         """
         user = callback.from_user
-        logger.info(f"🌐 {user.full_name} использует обычный интернет (черные списки)")
+        logger.info(f"🌐 {user.full_name} использует обычный интернет (без белых списков)")
         
         await callback.answer("🔄 Загрузка ключа для обхода блокировок...")
         
@@ -363,7 +363,7 @@ async def main():
             return
         
         key_text = (
-            f"<b>🌐 Обычный интернет (черные списки)</b>\n"
+            f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
             f"🔑 <b>Ключ для обхода блокировок:</b>\n"

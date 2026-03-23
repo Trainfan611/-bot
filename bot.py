@@ -91,10 +91,11 @@ async def main():
     dp = Dispatcher()
 
     # --- [ КЛАВИАТУРЫ ] ---
-    
+
     def get_main_keyboard():
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🚀 Выбрать тариф", callback_data="plans"))
+        builder.row(types.InlineKeyboardButton(text="🚀 Пробная версия VPN (Бесплатно)", callback_data="start_trial_vpn"))
+        builder.row(types.InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="plans"))
         builder.row(types.InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
         builder.row(types.InlineKeyboardButton(text="🛠 Поддержка", url="https://t.me/your_admin_link"))
         return builder.as_markup()
@@ -268,6 +269,62 @@ async def main():
             "Выбери подходящий план. Доступ предоставляется мгновенно после оплаты.",
             reply_markup=get_plans_keyboard()
         )
+
+    @dp.callback_query(F.data == "start_trial_vpn")
+    async def start_trial_vpn(callback: types.CallbackQuery):
+        """Запуск пробной версии VPN - выдача бесплатного ключа."""
+        user = callback.from_user
+        logger.info(f"🚀 {user.full_name} запустил пробную версию VPN")
+        
+        await callback.answer("🔄 Загрузка VPN ключа...")
+        
+        # Проверяем наличие ключа
+        current_key = vless.keys_manager.current_key
+        
+        if not current_key:
+            # Пытаемся обновить ключ
+            await callback.message.edit_text("🔄 Загрузка ключа...")
+            success = await vless.keys_manager.update_current_key(force=True)
+            if not success:
+                await callback.message.edit_text(
+                    "❌ <b>Не удалось загрузить ключ</b>\n\n"
+                    "Попробуйте позже или свяжитесь с поддержкой."
+                )
+                return
+            current_key = vless.keys_manager.current_key
+        
+        # Формируем сообщение с ключом
+        connection_info = vless.keys_manager.get_connection_info(current_key)
+        
+        if connection_info["status"] != "ok":
+            await callback.message.edit_text("❌ Ошибка парсинга ключа. Попробуйте ещё раз.")
+            return
+        
+        key_text = (
+            f"<b>🚀 Пробная версия VPN активирована!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Ваш бесплатный ключ подключён</b>\n\n"
+            f"📍 <b>Локация:</b> {connection_info['location']}\n"
+            f"🕒 <b>Обновлено:</b> {connection_info['updated_at']}\n"
+            f"📊 <b>Лимит трафика:</b> {connection_info['traffic_limit']}\n\n"
+            f"<b>🔑 VLESS ключ:</b>\n"
+            f"<code>{connection_info['key']}</code>\n\n"
+            f"<b>📲 Как подключить:</b>\n"
+            f"1️⃣ Скопируйте ключ выше\n"
+            f"2️⃣ Откройте VPN приложение (Hiddify, V2Ray, NekoBox)\n"
+            f"3️⃣ Нажмите 'Добавить профиль' → 'Импортировать из буфера'\n"
+            f"4️⃣ Нажмите 'Подключиться'\n\n"
+            f"<i>⚡️ Ключ обновляется автоматически каждый день!</i>"
+        )
+        
+        # Кнопки
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ", callback_data="vless_refresh"))
+        builder.row(types.InlineKeyboardButton(text="📍 Другие локации", callback_data="vless_locations"))
+        builder.row(types.InlineKeyboardButton(text="💎 Премиум тарифы", callback_data="plans"))
+        builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_home"))
+        
+        await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data.startswith("buy_"))
     async def plan_details(callback: types.CallbackQuery):

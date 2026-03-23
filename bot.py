@@ -10,8 +10,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp_socks import ProxyConnector
 
-# Импорт модуля базы данных
+# Импорт модулей
 import database as db
+import vless_keys as vless
 
 # --- [ КОНФИГ SteasHub ] ---
 TOKEN = os.getenv("BOT_TOKEN", "8406451825:AAHC7BXCcUMjagrhisEsND9H0h6EU6V2ZfI")
@@ -65,6 +66,13 @@ async def main():
     # Инициализация БД
     db.init_db()
     logger.info("✅ База данных инициализирована")
+    
+    # Инициализация менеджера ключей
+    await vless.init_keys_manager()
+    
+    # Запуск фоновой задачи автообновления ключей
+    asyncio.create_task(vless.scheduled_keys_update())
+    logger.info("✅ Запланировано автообновление ключей (каждый день в 00:00)")
     
     # Настройка пробивного соединения через прокси (опционально)
     if PROXY_URL and PROXY_URL != "":
@@ -604,8 +612,174 @@ async def main():
         if callback.from_user.id not in ADMIN_IDS:
             await callback.answer("⛔️ Доступ запрещён", show_alert=True)
             return
-        
+
         await callback.answer("🔜 Проверка пинга и скорости серверов в разработке", show_alert=True)
+
+    # ==================== VLESS КЛЮЧИ ====================
+
+    @dp.message(Command("fastvpn"))
+    async def cmd_fastvpn(message: types.Message):
+        """Команда для быстрого подключения к бесплатному VPN."""
+        user = message.from_user
+        logger.info(f"🚀 {user.full_name} использует /fastvpn")
+        
+        # Проверяем наличие ключа
+        current_key = vless.keys_manager.current_key
+        
+        if not current_key:
+            # Пытаемся обновить ключ
+            await message.answer("🔄 Загрузка ключа...")
+            success = await vless.keys_manager.update_current_key(force=True)
+            if not success:
+                await message.answer(
+                    "❌ <b>Не удалось загрузить ключ</b>\n\n"
+                    "Попробуйте позже или свяжитесь с поддержкой."
+                )
+                return
+            current_key = vless.keys_manager.current_key
+        
+        # Формируем сообщение с ключом
+        connection_info = vless.keys_manager.get_connection_info(current_key)
+        
+        if connection_info["status"] != "ok":
+            await message.answer("❌ Ошибка парсинга ключа. Попробуйте /keys для обновления.")
+            return
+        
+        key_text = (
+            f"<b>🚀 Быстрый VPN | Бесплатный ключ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📍 <b>Локация:</b> {connection_info['location']}\n"
+            f"🕒 <b>Обновлено:</b> {connection_info['updated_at']}\n"
+            f"📊 <b>Лимит трафика:</b> {connection_info['traffic_limit']}</\n\n"
+            f"<b>⚙️ Параметры подключения:</b>\n"
+            f"├ Хост: <code>{connection_info['host']}</code>\n"
+            f"├ Порт: <code>{connection_info['port']}</code>\n"
+            f"├ Security: <code>{connection_info['security']}</code>\n"
+            f"├ Type: <code>{connection_info['type']}</code>\n"
+            f"├ SNI: <code>{connection_info['sni']}</code>\n"
+            f"├ PBK: <code>{connection_info['pbk']}</code>\n"
+            f"└ SID: <code>{connection_info['sid']}</code>\n\n"
+            f"<b>🔑 VLESS ключ:</b>\n"
+            f"<code>{connection_info['key']}</code>\n\n"
+            f"<i>💡 Скопируйте ключ и импортируйте в ваш VPN клиент "
+            f"(V2Ray, Hiddify, NekoBox, Streisand и др.)</i>"
+        )
+        
+        # Кнопки
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ", callback_data="vless_refresh"))
+        builder.row(types.InlineKeyboardButton(text="📍 Другие локации", callback_data="vless_locations"))
+        builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home"))
+        
+        await message.answer(key_text, reply_markup=builder.as_markup())
+
+    @dp.message(Command("keys"))
+    async def cmd_keys(message: types.Message):
+        """Ручное обновление ключей."""
+        user = message.from_user
+        logger.info(f"🔄 {user.full_name} использует /keys")
+        
+        await message.answer("🔄 Обновление ключей...")
+        
+        success = await vless.keys_manager.update_current_key(force=True)
+        
+        if success:
+            current_key = vless.keys_manager.current_key
+            await message.answer(
+                f"✅ <b>Ключи обновлены!</b>\n\n"
+                f"📍 Актуальная локация: <b>{current_key.location}</b>\n"
+                f"🕒 Обновлено: {current_key.updated_at}\n\n"
+                f"Используйте /fastvpn для подключения."
+            )
+        else:
+            await message.answer(
+                "❌ <b>Не удалось обновить ключи</b>\n\n"
+                "Попробуйте позже или проверьте соединение с интернетом."
+            )
+
+    @dp.callback_query(F.data == "vless_refresh")
+    async def vless_refresh(callback: types.CallbackQuery):
+        """Обновление VLESS ключа."""
+        await callback.answer("🔄 Обновление...")
+        
+        success = await vless.keys_manager.update_current_key(force=True)
+        
+        if success:
+            current_key = vless.keys_manager.current_key
+            await callback.message.edit_text(
+                f"✅ <b>Ключ обновлён!</b>\n\n"
+                f"📍 Локация: {current_key.location}\n"
+                f"🕒 Обновлено: {current_key.updated_at}\n\n"
+                f"Используйте /fastvpn для получения ключа."
+            )
+        else:
+            await callback.answer("❌ Не удалось обновить", show_alert=True)
+
+    @dp.callback_query(F.data == "vless_locations")
+    async def vless_locations(callback: types.CallbackQuery):
+        """Показ доступных локаций."""
+        available_keys = vless.keys_manager.available_keys
+        
+        if not available_keys:
+            await callback.answer("🔄 Загрузка доступных локаций...")
+            success = await vless.keys_manager.update_current_key(force=True)
+            if not success:
+                await callback.answer("❌ Не удалось загрузить локации", show_alert=True)
+                return
+            available_keys = vless.keys_manager.available_keys
+        
+        if len(available_keys) <= 1:
+            await callback.answer("Доступна только одна локация", show_alert=True)
+            return
+        
+        text = "<b>📍 Доступные локации:</b>\n\n"
+        
+        builder = InlineKeyboardBuilder()
+        for i, key in enumerate(available_keys[:10], 1):  # Показываем до 10 локаций
+            text += f"{i}. {key.location} | {key.updated_at}\n"
+            builder.row(types.InlineKeyboardButton(
+                text=f"📍 {key.location}",
+                callback_data=f"vless_select_{i}"
+            ))
+        
+        builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="vless_refresh"))
+        
+        await callback.message.edit_text(text, reply_markup=builder.as_markup())
+
+    @dp.callback_query(F.data.startswith("vless_select_"))
+    async def vless_select_location(callback: types.CallbackQuery):
+        """Выбор конкретной локации."""
+        try:
+            index = int(callback.data.split("_")[-1]) - 1
+            available_keys = vless.keys_manager.available_keys
+            
+            if 0 <= index < len(available_keys):
+                selected_key = available_keys[index]
+                vless.keys_manager._current_key = selected_key  # Устанавливаем как текущий
+                
+                connection_info = vless.keys_manager.get_connection_info(selected_key)
+                
+                key_text = (
+                    f"<b>✅ Выбрана локация: {selected_key.location}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🕒 <b>Обновлено:</b> {selected_key.updated_at}\n"
+                    f"📊 <b>Лимит трафика:</b> {selected_key.traffic_limit}\n\n"
+                    f"<b>🔑 VLESS ключ:</b>\n"
+                    f"<code>{connection_info['key']}</code>\n\n"
+                    f"<i>💡 Скопируйте ключ и импортируйте в ваш VPN клиент</i>"
+                )
+                
+                builder = InlineKeyboardBuilder()
+                builder.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="vless_refresh"))
+                builder.row(types.InlineKeyboardButton(text="📍 Другие локации", callback_data="vless_locations"))
+                builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home"))
+                
+                await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
+            else:
+                await callback.answer("❌ Локация не найдена", show_alert=True)
+        except Exception as e:
+            logger.error(f"Ошибка выбора локации: {e}")
+            await callback.answer("❌ Ошибка", show_alert=True)
 
     @dp.callback_query(F.data == "root_back")
     async def root_back(callback: types.CallbackQuery):

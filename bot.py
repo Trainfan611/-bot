@@ -13,6 +13,7 @@ from aiohttp_socks import ProxyConnector
 # Импорт модулей
 import database as db
 import vless_keys as vless
+import black_vless_keys as black_vless
 
 # Пробуем импортировать EaveVPN менеджер (опционально)
 try:
@@ -77,7 +78,10 @@ async def main():
     
     # Инициализация менеджера ключей (GitHub)
     await vless.init_keys_manager()
-    
+
+    # Инициализация менеджера конфигов BlackVLESS (50+ конфигов)
+    await black_vless.init_keys_manager()
+
     # Инициализация менеджера ключей EaveVPN (если включено)
     if EAVEVPN_ENABLED:
         eave_success = await eavevpn.init_keys_manager()
@@ -92,6 +96,10 @@ async def main():
     # Запуск фоновой задачи автообновления ключей (GitHub)
     asyncio.create_task(vless.scheduled_keys_update())
     logger.info("✅ Запланировано автообновление ключей (каждые 12 часов)")
+
+    # Запуск фоновой задачи автообновления BlackVLESS конфигов
+    asyncio.create_task(black_vless.scheduled_keys_update())
+    logger.info("✅ Запланировано автообновление BlackVLESS конфигов (каждые 12 часов)")
     
     # Настройка пробивного соединения через прокси (опционально)
     if PROXY_URL and PROXY_URL != "":
@@ -115,6 +123,7 @@ async def main():
         builder = InlineKeyboardBuilder()
         builder.row(types.InlineKeyboardButton(text="🚀 Пробная версия VPN (Бесплатно)", callback_data="start_trial_vpn"))
         builder.row(types.InlineKeyboardButton(text="🌐 Обычный интернет (без белых списков)", callback_data="blacklist_vpn"))
+        builder.row(types.InlineKeyboardButton(text="🔑 VPN конфиги (50+ ключей)", callback_data="black_vless_configs"))
         builder.row(types.InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="plans"))
         builder.row(types.InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
         builder.row(types.InlineKeyboardButton(text="🛠 Поддержка", url="https://t.me/your_admin_link"))
@@ -350,119 +359,64 @@ async def main():
     async def blacklist_vpn(callback: types.CallbackQuery):
         """
         Обычный интернет через черные списки.
-        Ключи обновляются каждые 12 часов для обхода блокировок.
-        Приоритет: EaveVPN (@evavpn) → GitHub
+        Показывает случайный конфиг из пула BLACK_VLESS_RUS_mobile.txt
         """
         user = callback.from_user
-        logger.info(f"🌐 {user.full_name} использует обычный интернет (без белых списков)")
+        logger.info(f"🌐 {user.full_name} использует обычный интернет (черные списки)")
 
-        await callback.answer("🔄 Загрузка ключа для обхода блокировок...")
+        await callback.answer("🔄 Загрузка конфига...")
 
-        # Пробуем получить ключ из EaveVPN (приоритет)
-        current_key = None
-        source = ""
-        
-        if EAVEVPN_ENABLED and eavevpn.keys_manager.current_key:
-            current_key = eavevpn.keys_manager.current_key
-            source = "EaveVPN"
-            time_since_update = datetime.datetime.now() - eavevpn.keys_manager.last_update
-        else:
-            # Резервный вариант: ключи с GitHub
-            current_key = vless.keys_manager.current_key
-            source = "GitHub"
-            time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
+        # Получаем конфиг из пула BlackVLESS
+        current_config = black_vless.keys_manager.get_current_config()
 
-        if not current_key:
-            await callback.message.edit_text("🔄 Загрузка актуального ключа обхода...")
-            # Пробуем обновить из EaveVPN
-            if EAVEVPN_ENABLED:
-                success = await eavevpn.keys_manager.update_current_key(force=True)
-                if success:
-                    current_key = eavevpn.keys_manager.current_key
-                    source = "EaveVPN"
-                    time_since_update = datetime.datetime.now() - eavevpn.keys_manager.last_update
-            
-            # Если не получилось, пробуем GitHub
-            if not current_key:
-                success = await vless.keys_manager.update_current_key(force=True)
-                if success:
-                    current_key = vless.keys_manager.current_key
-                    source = "GitHub"
-                    time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
-            
-            if not current_key:
+        if not current_config:
+            # Пытаемся обновить пул
+            await callback.message.edit_text("🔄 Загрузка пула конфигов...")
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
                 await callback.message.edit_text(
-                    "❌ <b>Не удалось загрузить ключ</b>\n\n"
+                    "❌ <b>Не удалось загрузить конфиги</b>\n\n"
                     "Попробуйте позже или свяжитесь с поддержкой."
                 )
                 return
+            current_config = black_vless.keys_manager.get_current_config()
 
-        hours_left = 12 - time_since_update.total_seconds() / 3600
-        
-        # Формируем сообщение в зависимости от типа ключа
-        if hasattr(current_key, 'key_type'):
-            # Ключ из EaveVPN
-            key_text = (
-                f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
-                f"📥 <b>Источник:</b> @{source}\n"
-                f"🔑 <b>Ключ для обхода блокировок ({current_key.key_type.upper()}):</b>\n"
-                f"<code>{current_key.key}</code>\n\n"
-                f"<b>📊 Информация:</b>\n"
-                f"├ Тип: {current_key.key_type.upper()}\n"
-                f"├ Получено: {current_key.message_date.strftime('%Y-%m-%d %H:%M')}\n"
-                f"├ Обновление ключа: каждые 12 часов\n"
-                f"└ До следующего обновления: ~{max(0, hours_left):.1f} ч.\n\n"
-                f"<b>📲 Как использовать:</b>\n"
-                f"1️⃣ Скопируйте ключ выше\n"
-                f"2️⃣ Откройте VPN приложение\n"
-                f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
-                f"3️⃣ Импортируйте ключ из буфера обмена\n"
-                f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
-                f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
-                f"для обеспечения стабильного обхода блокировок</i>"
-            )
-        else:
-            # Ключ из GitHub (VLESS)
-            connection_info = vless.keys_manager.get_connection_info(current_key)
-            
-            if connection_info["status"] != "ok":
-                await callback.message.edit_text("❌ Ошибка парсинга ключа. Попробуйте ещё раз.")
-                return
-            
-            key_text = (
-                f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
-                f"📥 <b>Источник:</b> {source}\n"
-                f"🔑 <b>Ключ для обхода блокировок:</b>\n"
-                f"<code>{connection_info['key']}</code>\n\n"
-                f"<b>📊 Информация:</b>\n"
-                f"├ Локация: {connection_info['location']}\n"
-                f"├ Лимит трафика: {connection_info['traffic_limit']}\n"
-                f"├ Обновление ключа: каждые 12 часов\n"
-                f"└ До следующего обновления: ~{max(0, hours_left):.1f} ч.\n\n"
-                f"<b>📲 Как использовать:</b>\n"
-                f"1️⃣ Скопируйте ключ выше\n"
-                f"2️⃣ Откройте VPN приложение\n"
-                f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
-                f"3️⃣ Импортируйте ключ из буфера обмена\n"
-                f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
-                f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
-                f"для обеспечения стабильного обхода блокировок</i>"
-            )
+        # Парсим конфиг для получения деталей
+        config_info = black_vless.keys_manager.parse_config(current_config)
+
+        if config_info["status"] != "ok":
+            await callback.message.edit_text("❌ Ошибка парсинга конфига. Попробуйте ещё раз.")
+            return
+
+        config_text = (
+            f"<b>🌐 Обычный интернет (черные списки)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер конфига: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"├ Тип безопасности: {config_info['security']}\n"
+            f"└ Загружено: {config_info['loaded_at']}\n\n"
+            f"<b>🔑 Ключ для обхода блокировок:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<b>📲 Как использовать:</b>\n"
+            f"1️⃣ Скопируйте ключ выше (нажмите и удерживайте)\n"
+            f"2️⃣ Откройте VPN приложение:\n"
+            f"   • Hiddify / V2RayNG / NekoBox / Streisand\n"
+            f"3️⃣ Нажмите 'Добавить профиль' → 'Импортировать из буфера'\n"
+            f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
+            f"<i>⚡️ Нажмите '🔄 Обновить' для получения другого конфига!</i>"
+        )
 
         # Кнопки
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ сейчас", callback_data="blacklist_refresh"))
-        builder.row(types.InlineKeyboardButton(text="📍 Выбрать локацию", callback_data="vless_locations"))
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="blacklist_vpn_refresh"))
         builder.row(
             types.InlineKeyboardButton(text="💎 Премиум (без лимитов)", callback_data="plans"),
             types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home")
         )
 
-        await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
+        await callback.message.edit_text(config_text, reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data.startswith("buy_"))
     async def plan_details(callback: types.CallbackQuery):
@@ -912,36 +866,109 @@ async def main():
 
     @dp.callback_query(F.data == "blacklist_refresh")
     async def blacklist_refresh(callback: types.CallbackQuery):
-        """Обновление ключа для обычного интернета (EaveVPN/GitHub)."""
-        await callback.answer("🔄 Обновление ключа...")
-        
-        # Пробуем обновить из EaveVPN
-        if EAVEVPN_ENABLED:
-            success = await eavevpn.keys_manager.update_current_key(force=True)
-            if success:
-                current_key = eavevpn.keys_manager.current_key
-                await callback.message.edit_text(
-                    f"✅ <b>Ключ обновлён!</b>\n\n"
-                    f"📥 Источник: @evavpn\n"
-                    f"🔑 Тип: {current_key.key_type.upper()}\n"
-                    f"🕒 Получено: {current_key.message_date.strftime('%Y-%m-%d %H:%M')}\n\n"
-                    f"Нажмите '🔄 Обновить ключ сейчас' для получения ключа."
-                )
+        """Обновление ключа для обычного интернета (BlackVLESS)."""
+        user = callback.from_user
+        logger.info(f"🔄 {user.full_name} обновляет конфиг для обычного интернета")
+
+        await callback.answer("🔄 Получение нового конфига...")
+
+        # Получаем случайный конфиг из пула
+        new_config = black_vless.keys_manager.get_random_config()
+
+        if not new_config:
+            # Пытаемся обновить пул
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
+                await callback.answer("❌ Не удалось обновить конфиги", show_alert=True)
                 return
-        
-        # Резервный вариант: GitHub
-        success = await vless.keys_manager.update_current_key(force=True)
-        if success:
-            current_key = vless.keys_manager.current_key
-            await callback.message.edit_text(
-                f"✅ <b>Ключ обновлён!</b>\n\n"
-                f"📥 Источник: GitHub\n"
-                f"📍 Локация: {current_key.location}\n"
-                f"🕒 Обновлено: {current_key.updated_at}\n\n"
-                f"Нажмите '🔄 Обновить ключ сейчас' для получения ключа."
-            )
-        else:
-            await callback.answer("❌ Не удалось обновить", show_alert=True)
+            new_config = black_vless.keys_manager.get_random_config()
+
+        # Парсим конфиг
+        config_info = black_vless.keys_manager.parse_config(new_config)
+
+        if config_info["status"] != "ok":
+            await callback.answer("❌ Ошибка парсинга", show_alert=True)
+            return
+
+        config_text = (
+            f"<b>🌐 Обычный интернет (черные списки)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Конфиг обновлён!</b>\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер конфига: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"├ Тип безопасности: {config_info['security']}\n"
+            f"└ Загружено: {config_info['loaded_at']}\n\n"
+            f"<b>🔑 Ключ для обхода блокировок:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<b>📲 Как использовать:</b>\n"
+            f"1️⃣ Скопируйте ключ выше\n"
+            f"2️⃣ Откройте VPN приложение (Hiddify/V2Ray/NekoBox)\n"
+            f"3️⃣ Импортируйте из буфера и подключитесь\n\n"
+            f"<i>⚡️ Нажмите '🔄 Обновить' ещё раз для нового конфига!</i>"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="blacklist_vpn_refresh"))
+        builder.row(
+            types.InlineKeyboardButton(text="💎 Премиум (без лимитов)", callback_data="plans"),
+            types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home")
+        )
+
+        await callback.message.edit_text(config_text, reply_markup=builder.as_markup())
+
+    @dp.callback_query(F.data == "blacklist_vpn_refresh")
+    async def blacklist_vpn_refresh(callback: types.CallbackQuery):
+        """Обновление VPN конфига для обычного интернета - выдача нового случайного ключа."""
+        user = callback.from_user
+        logger.info(f"🔄 {user.full_name} обновляет VPN конфиг (черные списки)")
+
+        await callback.answer("🔄 Получение нового конфига...")
+
+        # Получаем случайный конфиг из пула
+        new_config = black_vless.keys_manager.get_random_config()
+
+        if not new_config:
+            # Пытаемся обновить пул
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
+                await callback.answer("❌ Не удалось обновить конфиги", show_alert=True)
+                return
+            new_config = black_vless.keys_manager.get_random_config()
+
+        # Парсим конфиг
+        config_info = black_vless.keys_manager.parse_config(new_config)
+
+        if config_info["status"] != "ok":
+            await callback.answer("❌ Ошибка парсинга", show_alert=True)
+            return
+
+        config_text = (
+            f"<b>🌐 Новый VPN конфиг</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Конфиг обновлён!</b>\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер конфига: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"├ Тип безопасности: {config_info['security']}\n"
+            f"└ Загружено: {config_info['loaded_at']}\n\n"
+            f"<b>🔑 Ключ для обхода блокировок:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<b>📲 Как подключить:</b>\n"
+            f"1️⃣ Скопируйте ключ выше\n"
+            f"2️⃣ Откройте VPN приложение (Hiddify/V2Ray/NekoBox)\n"
+            f"3️⃣ Импортируйте из буфера и подключитесь\n\n"
+            f"<i>⚡️ Нажмите '🔄 Обновить' ещё раз для нового конфига!</i>"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="blacklist_vpn_refresh"))
+        builder.row(
+            types.InlineKeyboardButton(text="💎 Премиум тарифы", callback_data="plans"),
+            types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_home")
+        )
+
+        await callback.message.edit_text(config_text, reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data == "vless_locations")
     async def vless_locations(callback: types.CallbackQuery):
@@ -980,13 +1007,13 @@ async def main():
         try:
             index = int(callback.data.split("_")[-1]) - 1
             available_keys = vless.keys_manager.available_keys
-            
+
             if 0 <= index < len(available_keys):
                 selected_key = available_keys[index]
                 vless.keys_manager._current_key = selected_key  # Устанавливаем как текущий
-                
+
                 connection_info = vless.keys_manager.get_connection_info(selected_key)
-                
+
                 key_text = (
                     f"<b>✅ Выбрана локация: {selected_key.location}</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -996,18 +1023,180 @@ async def main():
                     f"<code>{connection_info['key']}</code>\n\n"
                     f"<i>💡 Скопируйте ключ и импортируйте в ваш VPN клиент</i>"
                 )
-                
+
                 builder = InlineKeyboardBuilder()
                 builder.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="vless_refresh"))
                 builder.row(types.InlineKeyboardButton(text="📍 Другие локации", callback_data="vless_locations"))
                 builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home"))
-                
+
                 await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
             else:
                 await callback.answer("❌ Локация не найдена", show_alert=True)
         except Exception as e:
             logger.error(f"Ошибка выбора локации: {e}")
             await callback.answer("❌ Ошибка", show_alert=True)
+
+    # ==================== BLACK VLESS CONFIGS (50+) ====================
+
+    @dp.callback_query(F.data == "black_vless_configs")
+    async def show_black_vless_config(callback: types.CallbackQuery):
+        """
+        Показ VPN конфига из пула BLACK_VLESS_RUS_mobile.txt
+        В пуле доступно 50+ конфигов, выдаётся случайный.
+        """
+        user = callback.from_user
+        logger.info(f"🔑 {user.full_name} запрашивает VPN конфиг из пула (50+)")
+
+        await callback.answer("🔄 Загрузка конфига...")
+
+        # Проверяем наличие конфигов
+        current_config = black_vless.keys_manager.get_current_config()
+
+        if not current_config:
+            # Пытаемся обновить пул
+            await callback.message.edit_text("🔄 Загрузка пула конфигов...")
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
+                await callback.message.edit_text(
+                    "❌ <b>Не удалось загрузить конфиги</b>\n\n"
+                    "Попробуйте позже или свяжитесь с поддержкой."
+                )
+                return
+            current_config = black_vless.keys_manager.get_current_config()
+
+        # Парсим конфиг для получения деталей
+        config_info = black_vless.keys_manager.parse_config(current_config)
+
+        if config_info["status"] != "ok":
+            await callback.message.edit_text("❌ Ошибка парсинга конфига. Попробуйте ещё раз.")
+            return
+
+        config_text = (
+            f"<b>🔑 VPN конфиг из пула (50+ ключей)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Конфиг готов к использованию!</b>\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер конфига: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"├ Тип безопасности: {config_info['security']}\n"
+            f"└ Загружено: {config_info['loaded_at']}\n\n"
+            f"<b>🔗 VLESS ключ:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<b>📲 Как подключить:</b>\n"
+            f"1️⃣ Скопируйте ключ выше (нажмите и удерживайте)\n"
+            f"2️⃣ Откройте VPN приложение:\n"
+            f"   • Hiddify / V2RayNG / NekoBox / Streisand\n"
+            f"3️⃣ Нажмите 'Добавить профиль' → 'Импортировать из буфера'\n"
+            f"4️⃣ Нажмите 'Подключиться'\n\n"
+            f"<i>⚡️ Нажмите '🔄 Обновить' для получения другого конфига!</i>"
+        )
+
+        # Кнопки
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="black_vless_refresh"))
+        builder.row(
+            types.InlineKeyboardButton(text="💎 Премиум тарифы", callback_data="plans"),
+            types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_home")
+        )
+
+        await callback.message.edit_text(config_text, reply_markup=builder.as_markup())
+
+    @dp.callback_query(F.data == "black_vless_refresh")
+    async def black_vless_refresh(callback: types.CallbackQuery):
+        """Обновление VPN конфига - выдача нового случайного ключа."""
+        user = callback.from_user
+        logger.info(f"🔄 {user.full_name} обновляет VPN конфиг")
+
+        await callback.answer("🔄 Получение нового конфига...")
+
+        # Получаем случайный конфиг из пула
+        new_config = black_vless.keys_manager.get_random_config()
+
+        if not new_config:
+            # Пытаемся обновить пул
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
+                await callback.answer("❌ Не удалось обновить конфиги", show_alert=True)
+                return
+            new_config = black_vless.keys_manager.get_random_config()
+
+        # Парсим конфиг
+        config_info = black_vless.keys_manager.parse_config(new_config)
+
+        if config_info["status"] != "ok":
+            await callback.answer("❌ Ошибка парсинга", show_alert=True)
+            return
+
+        config_text = (
+            f"<b>🔑 Новый VPN конфиг</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Конфиг обновлён!</b>\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер конфига: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"├ Тип безопасности: {config_info['security']}\n"
+            f"└ Загружено: {config_info['loaded_at']}\n\n"
+            f"<b>🔗 VLESS ключ:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<b>📲 Как подключить:</b>\n"
+            f"1️⃣ Скопируйте ключ выше\n"
+            f"2️⃣ Откройте VPN приложение (Hiddify/V2Ray/NekoBox)\n"
+            f"3️⃣ Импортируйте из буфера и подключитесь\n\n"
+            f"<i>⚡️ Нажмите '🔄 Обновить' ещё раз для нового конфига!</i>"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="black_vless_refresh"))
+        builder.row(
+            types.InlineKeyboardButton(text="💎 Премиум тарифы", callback_data="plans"),
+            types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_home")
+        )
+
+        await callback.message.edit_text(config_text, reply_markup=builder.as_markup())
+
+    @dp.message(Command("blackvpn"))
+    async def cmd_blackvpn(message: types.Message):
+        """Команда для быстрого доступа к пулу конфигов."""
+        user = message.from_user
+        logger.info(f"🔑 {user.full_name} использует /blackvpn")
+
+        # Проверяем наличие конфигов
+        current_config = black_vless.keys_manager.get_current_config()
+
+        if not current_config:
+            await message.answer("🔄 Загрузка пула конфигов...")
+            success = await black_vless.keys_manager.update_configs(force=True)
+            if not success:
+                await message.answer(
+                    "❌ <b>Не удалось загрузить конфиги</b>\n\n"
+                    "Попробуйте позже или свяжитесь с поддержкой."
+                )
+                return
+            current_config = black_vless.keys_manager.get_current_config()
+
+        config_info = black_vless.keys_manager.parse_config(current_config)
+
+        if config_info["status"] != "ok":
+            await message.answer("❌ Ошибка парсинга конфига.")
+            return
+
+        config_text = (
+            f"<b>🔑 VPN конфиг (пул 50+ ключей)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 <b>Информация:</b>\n"
+            f"├ Номер: #{config_info['index']} из {config_info['total']}\n"
+            f"├ Сервер: <code>{config_info['host']}:{config_info['port']}</code>\n"
+            f"└ Безопасность: {config_info['security']}\n\n"
+            f"<b>🔗 VLESS ключ:</b>\n"
+            f"<code>{config_info['config']}</code>\n\n"
+            f"<i>💡 Используйте кнопку 'Обновить' для получения другого конфига</i>"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data="black_vless_refresh"))
+        builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home"))
+
+        await message.answer(config_text, reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data == "root_back")
     async def root_back(callback: types.CallbackQuery):

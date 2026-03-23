@@ -95,6 +95,7 @@ async def main():
     def get_main_keyboard():
         builder = InlineKeyboardBuilder()
         builder.row(types.InlineKeyboardButton(text="🚀 Пробная версия VPN (Бесплатно)", callback_data="start_trial_vpn"))
+        builder.row(types.InlineKeyboardButton(text="🌐 Обычный интернет (черные списки)", callback_data="blacklist_vpn"))
         builder.row(types.InlineKeyboardButton(text="💎 Выбрать тариф", callback_data="plans"))
         builder.row(types.InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
         builder.row(types.InlineKeyboardButton(text="🛠 Поддержка", url="https://t.me/your_admin_link"))
@@ -323,6 +324,73 @@ async def main():
         builder.row(types.InlineKeyboardButton(text="📍 Другие локации", callback_data="vless_locations"))
         builder.row(types.InlineKeyboardButton(text="💎 Премиум тарифы", callback_data="plans"))
         builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_home"))
+
+        await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
+
+    @dp.callback_query(F.data == "blacklist_vpn")
+    async def blacklist_vpn(callback: types.CallbackQuery):
+        """
+        Обычный интернет через черные списки.
+        Ключи обновляются каждые 12 часов для обхода блокировок.
+        """
+        user = callback.from_user
+        logger.info(f"🌐 {user.full_name} использует обычный интернет (черные списки)")
+        
+        await callback.answer("🔄 Загрузка ключа для обхода блокировок...")
+        
+        # Проверяем наличие ключа
+        current_key = vless.keys_manager.current_key
+        
+        if not current_key:
+            await callback.message.edit_text("🔄 Загрузка актуального ключа обхода...")
+            success = await vless.keys_manager.update_current_key(force=True)
+            if not success:
+                await callback.message.edit_text(
+                    "❌ <b>Не удалось загрузить ключ</b>\n\n"
+                    "Попробуйте позже или свяжитесь с поддержкой."
+                )
+                return
+            current_key = vless.keys_manager.current_key
+        
+        # Проверяем, нужно ли обновить ключ (каждые 12 часов)
+        time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
+        hours_left = 12 - time_since_update.total_seconds() / 3600
+        
+        connection_info = vless.keys_manager.get_connection_info(current_key)
+        
+        if connection_info["status"] != "ok":
+            await callback.message.edit_text("❌ Ошибка парсинга ключа. Попробуйте ещё раз.")
+            return
+        
+        key_text = (
+            f"<b>🌐 Обычный интернет (черные списки)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
+            f"🔑 <b>Ключ для обхода блокировок:</b>\n"
+            f"<code>{connection_info['key']}</code>\n\n"
+            f"<b>📊 Информация:</b>\n"
+            f"├ Локация: {connection_info['location']}\n"
+            f"├ Лимит трафика: {connection_info['traffic_limit']}\n"
+            f"├ Обновление ключа: каждые 12 часов\n"
+            f"└ До следующего обновления: ~{hours_left:.1f} ч.\n\n"
+            f"<b>📲 Как использовать:</b>\n"
+            f"1️⃣ Скопируйте ключ выше\n"
+            f"2️⃣ Откройте VPN приложение\n"
+            f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
+            f"3️⃣ Импортируйте ключ из буфера обмена\n"
+            f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
+            f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
+            f"для обеспечения стабильного обхода блокировок</i>"
+        )
+        
+        # Кнопки
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ сейчас", callback_data="vless_refresh"))
+        builder.row(types.InlineKeyboardButton(text="📍 Выбрать локацию", callback_data="vless_locations"))
+        builder.row(
+            types.InlineKeyboardButton(text="💎 Премиум (без лимитов)", callback_data="plans"),
+            types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home")
+        )
         
         await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
 

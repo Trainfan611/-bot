@@ -44,7 +44,7 @@ class VLESSKeysManager:
     def __init__(self):
         self._current_key: Optional[VLESSKey] = None
         self._last_update: Optional[datetime] = None
-        self._update_interval = timedelta(hours=24)  # Обновление раз в 24 часа
+        self._update_interval = timedelta(hours=12)  # Обновление раз в 12 часов
         self._keys_history: List[VLESSKey] = []
     
     async def fetch_keys(self) -> List[VLESSKey]:
@@ -253,19 +253,24 @@ async def init_keys_manager() -> bool:
 async def scheduled_keys_update():
     """
     Фоновая задача для периодического обновления ключей.
-    Запускается каждые 24 часа в полночь.
+    Запускается каждые 12 часов (в 00:00 и 12:00 UTC).
     """
     import asyncio
-    
+
     while True:
         now = datetime.now()
-        # Вычисляем время до следующей полночи
-        tomorrow = now + timedelta(days=1)
-        midnight = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
-        sleep_seconds = (midnight - now).total_seconds()
+        # Обновляем каждые 12 часов: в 00:00 и 12:00
+        if now.hour < 12:
+            next_update = now.replace(hour=12, minute=0, second=0, microsecond=0)
+        elif now.hour < 24:
+            next_update = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        else:
+            next_update = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         
+        sleep_seconds = (next_update - now).total_seconds()
+
         logger.info(f"Следующее обновление ключей через {sleep_seconds / 3600:.1f} часов")
         await asyncio.sleep(sleep_seconds)
-        
-        logger.info("🔄 Автоматическое обновление ключей...")
+
+        logger.info("🔄 Автоматическое обновление ключей (каждые 12 часов)...")
         await keys_manager.update_current_key(force=True)

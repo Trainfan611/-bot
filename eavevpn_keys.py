@@ -21,8 +21,11 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 PHONE = os.getenv("TELEGRAM_PHONE", "")
 
-# Канал EaveVPN
-CHANNEL_USERNAME = "evavpn"  # @evavpn
+# Каналы EaveVPN (приоритет по порядку)
+# @EaveVPN - основной канал
+# @EvaVPN_Free - бесплатные ключи
+# @evavpn - альтернативный канал
+CHANNEL_USERNAMES = ["EvaVPN_Free", "EaveVPN", "evavpn"]
 
 # Паттерны для извлечения ключей
 VLESS_PATTERN = re.compile(r'vless://[^\s\n`]+')
@@ -105,86 +108,93 @@ class EaveVPNKeysManager:
     
     async def fetch_keys(self, limit: int = 50) -> List[VPNKey]:
         """
-        Загрузка ключей из канала @evavpn.
-        
+        Загрузка ключей из каналов EaveVPN.
+        Проверяет несколько каналов по приоритету.
+
         Args:
-            limit: Количество последних сообщений для проверки
-        
+            limit: Количество последних сообщений для проверки в каждом канале
+
         Returns:
             Список найденных VPN ключей
         """
         keys = []
-        
+
         if not self._is_initialized:
             success = await self.init_client()
             if not success:
                 return keys
-        
-        try:
-            # Получаем последние сообщения из канала
-            async for message in self._client.iter_messages(CHANNEL_USERNAME, limit=limit):
-                if not message.message:
-                    continue
-                
-                text = message.message
-                
-                # Ищем VLESS ключи
-                vless_matches = VLESS_PATTERN.findall(text)
-                for key in vless_matches:
-                    vpn_key = VPNKey(
-                        key=key,
-                        key_type="vless",
-                        message_text=text[:100],
-                        message_date=message.date,
-                        message_id=message.id
-                    )
-                    keys.append(vpn_key)
-                    logger.info(f"Найден VLESS ключ: {message.date}")
-                
-                # Ищем VMESS ключи
-                vmess_matches = VMESS_PATTERN.findall(text)
-                for key in vmess_matches:
-                    vpn_key = VPNKey(
-                        key=key,
-                        key_type="vmess",
-                        message_text=text[:100],
-                        message_date=message.date,
-                        message_id=message.id
-                    )
-                    keys.append(vpn_key)
-                    logger.info(f"Найден VMESS ключ: {message.date}")
-                
-                # Ищем TROJAN ключи
-                trojan_matches = TROJAN_PATTERN.findall(text)
-                for key in trojan_matches:
-                    vpn_key = VPNKey(
-                        key=key,
-                        key_type="trojan",
-                        message_text=text[:100],
-                        message_date=message.date,
-                        message_id=message.id
-                    )
-                    keys.append(vpn_key)
-                    logger.info(f"Найден TROJAN ключ: {message.date}")
-                
-                # Ищем Shadowsocks ключи
-                ss_matches = SS_PATTERN.findall(text)
-                for key in ss_matches:
-                    vpn_key = VPNKey(
-                        key=key,
-                        key_type="ss",
-                        message_text=text[:100],
-                        message_date=message.date,
-                        message_id=message.id
-                    )
-                    keys.append(vpn_key)
-                    logger.info(f"Найден SS ключ: {message.date}")
-            
-            logger.info(f"Всего найдено ключей: {len(keys)}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка при загрузке ключей: {e}")
-        
+
+        for channel_username in CHANNEL_USERNAMES:
+            try:
+                # Получаем последние сообщения из канала
+                async for message in self._client.iter_messages(channel_username, limit=limit):
+                    if not message.message:
+                        continue
+
+                    text = message.message
+
+                    # Ищем VLESS ключи
+                    vless_matches = VLESS_PATTERN.findall(text)
+                    for key in vless_matches:
+                        vpn_key = VPNKey(
+                            key=key,
+                            key_type="vless",
+                            message_text=text[:100],
+                            message_date=message.date,
+                            message_id=message.id
+                        )
+                        keys.append(vpn_key)
+                        logger.info(f"Найден VLESS ключ в @{channel_username}: {message.date}")
+
+                    # Ищем VMESS ключи
+                    vmess_matches = VMESS_PATTERN.findall(text)
+                    for key in vmess_matches:
+                        vpn_key = VPNKey(
+                            key=key,
+                            key_type="vmess",
+                            message_text=text[:100],
+                            message_date=message.date,
+                            message_id=message.id
+                        )
+                        keys.append(vpn_key)
+                        logger.info(f"Найден VMESS ключ в @{channel_username}: {message.date}")
+
+                    # Ищем TROJAN ключи
+                    trojan_matches = TROJAN_PATTERN.findall(text)
+                    for key in trojan_matches:
+                        vpn_key = VPNKey(
+                            key=key,
+                            key_type="trojan",
+                            message_text=text[:100],
+                            message_date=message.date,
+                            message_id=message.id
+                        )
+                        keys.append(vpn_key)
+                        logger.info(f"Найден TROJAN ключ в @{channel_username}: {message.date}")
+
+                    # Ищем Shadowsocks ключи
+                    ss_matches = SS_PATTERN.findall(text)
+                    for key in ss_matches:
+                        vpn_key = VPNKey(
+                            key=key,
+                            key_type="ss",
+                            message_text=text[:100],
+                            message_date=message.date,
+                            message_id=message.id
+                        )
+                        keys.append(vpn_key)
+                        logger.info(f"Найден SS ключ в @{channel_username}: {message.date}")
+
+                # Если нашли ключи в этом канале, не проверяем остальные
+                if keys:
+                    logger.info(f"✅ Найдено ключей в @{channel_username}: {len(keys)}")
+                    break
+
+            except Exception as e:
+                logger.warning(f"Не удалось получить ключи из @{channel_username}: {e}")
+                continue
+
+        logger.info(f"Всего найдено ключей: {len(keys)}")
         return keys
     
     async def update_current_key(self, force: bool = False) -> bool:

@@ -14,6 +14,14 @@ from aiohttp_socks import ProxyConnector
 import database as db
 import vless_keys as vless
 
+# Пробуем импортировать EaveVPN менеджер (опционально)
+try:
+    import eavevpn_keys as eavevpn
+    EAVEVPN_ENABLED = True
+except ImportError:
+    EAVEVPN_ENABLED = False
+    logger.warning("⚠️ Модуль eavevpn_keys не найден, загрузка из @EaveVPNbot отключена")
+
 # --- [ КОНФИГ SteasHub ] ---
 TOKEN = os.getenv("BOT_TOKEN", "8406451825:AAHC7BXCcUMjagrhisEsND9H0h6EU6V2ZfI")
 PROXY_URL = os.getenv("PROXY_URL", "")
@@ -67,12 +75,23 @@ async def main():
     db.init_db()
     logger.info("✅ База данных инициализирована")
     
-    # Инициализация менеджера ключей
+    # Инициализация менеджера ключей (GitHub)
     await vless.init_keys_manager()
     
-    # Запуск фоновой задачи автообновления ключей
+    # Инициализация менеджера ключей EaveVPN (если включено)
+    if EAVEVPN_ENABLED:
+        eave_success = await eavevpn.init_keys_manager()
+        if eave_success:
+            logger.info("✅ EaveVPN менеджер ключей инициализирован")
+            # Запуск фоновой задачи автообновления EaveVPN ключей
+            asyncio.create_task(eavevpn.scheduled_keys_update())
+            logger.info("✅ Запланировано автообновление ключей EaveVPN (каждые 12 часов)")
+        else:
+            logger.warning("⚠️ EaveVPN менеджер не инициализирован, используем ключи с GitHub")
+    
+    # Запуск фоновой задачи автообновления ключей (GitHub)
     asyncio.create_task(vless.scheduled_keys_update())
-    logger.info("✅ Запланировано автообновление ключей (каждый день в 00:00)")
+    logger.info("✅ Запланировано автообновление ключей (каждые 12 часов)")
     
     # Настройка пробивного соединения через прокси (опционально)
     if PROXY_URL and PROXY_URL != "":
@@ -332,66 +351,117 @@ async def main():
         """
         Обычный интернет через черные списки.
         Ключи обновляются каждые 12 часов для обхода блокировок.
+        Приоритет: EaveVPN (@evavpn) → GitHub
         """
         user = callback.from_user
         logger.info(f"🌐 {user.full_name} использует обычный интернет (без белых списков)")
-        
+
         await callback.answer("🔄 Загрузка ключа для обхода блокировок...")
+
+        # Пробуем получить ключ из EaveVPN (приоритет)
+        current_key = None
+        source = ""
         
-        # Проверяем наличие ключа
-        current_key = vless.keys_manager.current_key
-        
+        if EAVEVPN_ENABLED and eavevpn.keys_manager.current_key:
+            current_key = eavevpn.keys_manager.current_key
+            source = "EaveVPN"
+            time_since_update = datetime.datetime.now() - eavevpn.keys_manager.last_update
+        else:
+            # Резервный вариант: ключи с GitHub
+            current_key = vless.keys_manager.current_key
+            source = "GitHub"
+            time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
+
         if not current_key:
             await callback.message.edit_text("🔄 Загрузка актуального ключа обхода...")
-            success = await vless.keys_manager.update_current_key(force=True)
-            if not success:
+            # Пробуем обновить из EaveVPN
+            if EAVEVPN_ENABLED:
+                success = await eavevpn.keys_manager.update_current_key(force=True)
+                if success:
+                    current_key = eavevpn.keys_manager.current_key
+                    source = "EaveVPN"
+                    time_since_update = datetime.datetime.now() - eavevpn.keys_manager.last_update
+            
+            # Если не получилось, пробуем GitHub
+            if not current_key:
+                success = await vless.keys_manager.update_current_key(force=True)
+                if success:
+                    current_key = vless.keys_manager.current_key
+                    source = "GitHub"
+                    time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
+            
+            if not current_key:
                 await callback.message.edit_text(
                     "❌ <b>Не удалось загрузить ключ</b>\n\n"
                     "Попробуйте позже или свяжитесь с поддержкой."
                 )
                 return
-            current_key = vless.keys_manager.current_key
-        
-        # Проверяем, нужно ли обновить ключ (каждые 12 часов)
-        time_since_update = datetime.datetime.now() - vless.keys_manager.last_update
+
         hours_left = 12 - time_since_update.total_seconds() / 3600
         
-        connection_info = vless.keys_manager.get_connection_info(current_key)
-        
-        if connection_info["status"] != "ok":
-            await callback.message.edit_text("❌ Ошибка парсинга ключа. Попробуйте ещё раз.")
-            return
-        
-        key_text = (
-            f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
-            f"🔑 <b>Ключ для обхода блокировок:</b>\n"
-            f"<code>{connection_info['key']}</code>\n\n"
-            f"<b>📊 Информация:</b>\n"
-            f"├ Локация: {connection_info['location']}\n"
-            f"├ Лимит трафика: {connection_info['traffic_limit']}\n"
-            f"├ Обновление ключа: каждые 12 часов\n"
-            f"└ До следующего обновления: ~{hours_left:.1f} ч.\n\n"
-            f"<b>📲 Как использовать:</b>\n"
-            f"1️⃣ Скопируйте ключ выше\n"
-            f"2️⃣ Откройте VPN приложение\n"
-            f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
-            f"3️⃣ Импортируйте ключ из буфера обмена\n"
-            f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
-            f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
-            f"для обеспечения стабильного обхода блокировок</i>"
-        )
-        
+        # Формируем сообщение в зависимости от типа ключа
+        if hasattr(current_key, 'key_type'):
+            # Ключ из EaveVPN
+            key_text = (
+                f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
+                f"📥 <b>Источник:</b> @{source}\n"
+                f"🔑 <b>Ключ для обхода блокировок ({current_key.key_type.upper()}):</b>\n"
+                f"<code>{current_key.key}</code>\n\n"
+                f"<b>📊 Информация:</b>\n"
+                f"├ Тип: {current_key.key_type.upper()}\n"
+                f"├ Получено: {current_key.message_date.strftime('%Y-%m-%d %H:%M')}\n"
+                f"├ Обновление ключа: каждые 12 часов\n"
+                f"└ До следующего обновления: ~{max(0, hours_left):.1f} ч.\n\n"
+                f"<b>📲 Как использовать:</b>\n"
+                f"1️⃣ Скопируйте ключ выше\n"
+                f"2️⃣ Откройте VPN приложение\n"
+                f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
+                f"3️⃣ Импортируйте ключ из буфера обмена\n"
+                f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
+                f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
+                f"для обеспечения стабильного обхода блокировок</i>"
+            )
+        else:
+            # Ключ из GitHub (VLESS)
+            connection_info = vless.keys_manager.get_connection_info(current_key)
+            
+            if connection_info["status"] != "ok":
+                await callback.message.edit_text("❌ Ошибка парсинга ключа. Попробуйте ещё раз.")
+                return
+            
+            key_text = (
+                f"<b>🌐 Обычный интернет (без белых списков)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"✅ <b>Доступ ко всем сайтам активирован!</b>\n\n"
+                f"📥 <b>Источник:</b> {source}\n"
+                f"🔑 <b>Ключ для обхода блокировок:</b>\n"
+                f"<code>{connection_info['key']}</code>\n\n"
+                f"<b>📊 Информация:</b>\n"
+                f"├ Локация: {connection_info['location']}\n"
+                f"├ Лимит трафика: {connection_info['traffic_limit']}\n"
+                f"├ Обновление ключа: каждые 12 часов\n"
+                f"└ До следующего обновления: ~{max(0, hours_left):.1f} ч.\n\n"
+                f"<b>📲 Как использовать:</b>\n"
+                f"1️⃣ Скопируйте ключ выше\n"
+                f"2️⃣ Откройте VPN приложение\n"
+                f"   • Hiddify / V2Ray / NekoBox / Streisand\n"
+                f"3️⃣ Импортируйте ключ из буфера обмена\n"
+                f"4️⃣ Подключитесь и пользуйтесь интернетом без блокировок!\n\n"
+                f"<i>⚡️ Ключ автоматически обновляется каждые 12 часов\n"
+                f"для обеспечения стабильного обхода блокировок</i>"
+            )
+
         # Кнопки
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ сейчас", callback_data="vless_refresh"))
+        builder.row(types.InlineKeyboardButton(text="🔄 Обновить ключ сейчас", callback_data="blacklist_refresh"))
         builder.row(types.InlineKeyboardButton(text="📍 Выбрать локацию", callback_data="vless_locations"))
         builder.row(
             types.InlineKeyboardButton(text="💎 Премиум (без лимитов)", callback_data="plans"),
             types.InlineKeyboardButton(text="🔙 Назад", callback_data="back_home")
         )
-        
+
         await callback.message.edit_text(key_text, reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data.startswith("buy_"))
@@ -826,9 +896,9 @@ async def main():
     async def vless_refresh(callback: types.CallbackQuery):
         """Обновление VLESS ключа."""
         await callback.answer("🔄 Обновление...")
-        
+
         success = await vless.keys_manager.update_current_key(force=True)
-        
+
         if success:
             current_key = vless.keys_manager.current_key
             await callback.message.edit_text(
@@ -836,6 +906,39 @@ async def main():
                 f"📍 Локация: {current_key.location}\n"
                 f"🕒 Обновлено: {current_key.updated_at}\n\n"
                 f"Используйте /fastvpn для получения ключа."
+            )
+        else:
+            await callback.answer("❌ Не удалось обновить", show_alert=True)
+
+    @dp.callback_query(F.data == "blacklist_refresh")
+    async def blacklist_refresh(callback: types.CallbackQuery):
+        """Обновление ключа для обычного интернета (EaveVPN/GitHub)."""
+        await callback.answer("🔄 Обновление ключа...")
+        
+        # Пробуем обновить из EaveVPN
+        if EAVEVPN_ENABLED:
+            success = await eavevpn.keys_manager.update_current_key(force=True)
+            if success:
+                current_key = eavevpn.keys_manager.current_key
+                await callback.message.edit_text(
+                    f"✅ <b>Ключ обновлён!</b>\n\n"
+                    f"📥 Источник: @evavpn\n"
+                    f"🔑 Тип: {current_key.key_type.upper()}\n"
+                    f"🕒 Получено: {current_key.message_date.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"Нажмите '🔄 Обновить ключ сейчас' для получения ключа."
+                )
+                return
+        
+        # Резервный вариант: GitHub
+        success = await vless.keys_manager.update_current_key(force=True)
+        if success:
+            current_key = vless.keys_manager.current_key
+            await callback.message.edit_text(
+                f"✅ <b>Ключ обновлён!</b>\n\n"
+                f"📥 Источник: GitHub\n"
+                f"📍 Локация: {current_key.location}\n"
+                f"🕒 Обновлено: {current_key.updated_at}\n\n"
+                f"Нажмите '🔄 Обновить ключ сейчас' для получения ключа."
             )
         else:
             await callback.answer("❌ Не удалось обновить", show_alert=True)
